@@ -3,7 +3,8 @@
 //! # Usage
 //!
 //! ```bash
-//! familycomd                    # Start the daemon
+//! familycomd                    # Start with system tray
+//! familycomd --no-tray          # Start without system tray (headless)
 //! familycomd --name "PC-Sala"   # Start with a specific display name
 //! familycomd --port 9876        # Use a specific TCP port
 //! ```
@@ -18,13 +19,16 @@
 //! 1. mDNS discovery (background thread via mdns-sd)
 //! 2. TCP message server (tokio task)
 //! 3. IPC server on Unix socket (tokio task)
-//! 4. Main event loop in DaemonApp (tokio task)
+//! 4. System tray icon (dedicated thread with platform event loop)
+//! 5. Main event loop in DaemonApp (tokio task)
 
 mod app;
 mod client;
 mod discovery;
 mod ipc_server;
+mod notifications;
 mod server;
+mod tray;
 
 use anyhow::{Context, Result};
 use app::DaemonApp;
@@ -33,11 +37,12 @@ use discovery::DiscoveryService;
 use familycom_core::config::AppConfig;
 use familycom_core::db::Database;
 use ipc_server::IpcServer;
+use notifications::NotificationManager;
 use server::MessageServer;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// FamilyCom daemon — LAN messaging background service.
 #[derive(Parser, Debug)]
@@ -63,6 +68,10 @@ struct Cli {
     /// Path to the Unix socket for IPC.
     #[arg(long)]
     socket: Option<PathBuf>,
+
+    /// Disable the system tray icon (run headless in terminal).
+    #[arg(long)]
+    no_tray: bool,
 }
 
 #[tokio::main]
@@ -185,7 +194,58 @@ async fn main() -> Result<()> {
         ipc_server.accept_loop(ipc_request_tx, event_tx).await;
     });
 
+    // -----------------------------------------------------------------------
+    // Start system tray (if enabled)
+    // -----------------------------------------------------------------------
+    let tray_event_rx = if !cli.no_tray {
+        let (tray_event_tx, tray_event_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            tray::run_tray(tray_event_tx, 0);
+        });
+        Some(tray_event_rx)
+    } else {
+        info!("system tray disabled (--no-tray)");
+        None
+    };
+
+    // -----------------------------------------------------------------------
+    // Set up notification manager
+    // -----------------------------------------------------------------------
+    let mut notification_mgr = NotificationManager::new();
+
+    // Subscribe to daemon events for notifications
+    let mut notification_rx = daemon_app.event_sender().subscribe();
+
+    // Spawn notification handler task
+    tokio::spawn(async move {
+        loop {
+            match notification_rx.recv().await {
+                Ok(familycom_core::ipc::ServerMessage::NewMessage { ref message }) => {
+                    if message.direction == familycom_core::types::Direction::Received {
+                        // Get the sender name from the message content context
+                        // We pass a preview of the message
+                        let preview = if message.content.len() > 100 {
+                            format!("{}...", &message.content[..message.content.floor_char_boundary(97)])
+                        } else {
+                            message.content.clone()
+                        };
+                        notification_mgr.notify_new_message("Peer", &preview);
+                    }
+                }
+                Ok(_) => {} // Other events don't need notifications
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(missed = n, "notification handler lagged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    break;
+                }
+            }
+        }
+    });
+
+    // -----------------------------------------------------------------------
     // Set up signal handler for graceful shutdown
+    // -----------------------------------------------------------------------
     let shutdown_tx_clone = shutdown_tx.clone();
     tokio::spawn(async move {
         match tokio::signal::ctrl_c().await {
@@ -198,6 +258,39 @@ async fn main() -> Result<()> {
             }
         }
     });
+
+    // Bridge tray events from the std channel (blocking) to a tokio channel.
+    // We spawn a blocking task that reads from the std receiver and forwards
+    // events to a tokio mpsc channel that the async code can select! on.
+    if let Some(tray_rx) = tray_event_rx {
+        let (tray_async_tx, mut tray_async_rx) = mpsc::channel::<tray::TrayEvent>(16);
+
+        // Blocking bridge thread: reads std::sync::mpsc → sends to tokio::mpsc
+        tokio::task::spawn_blocking(move || {
+            while let Ok(event) = tray_rx.recv() {
+                if tray_async_tx.blocking_send(event).is_err() {
+                    break; // Receiver dropped, daemon is shutting down
+                }
+            }
+        });
+
+        // Async handler: processes tray events in the tokio runtime
+        let shutdown_tx_tray = shutdown_tx.clone();
+        tokio::spawn(async move {
+            while let Some(event) = tray_async_rx.recv().await {
+                match event {
+                    tray::TrayEvent::OpenChat => {
+                        tray::open_chat_in_terminal();
+                    }
+                    tray::TrayEvent::Quit => {
+                        info!("quit requested from tray");
+                        let _ = shutdown_tx_tray.send(()).await;
+                        break;
+                    }
+                }
+            }
+        });
+    }
 
     // Run the main event loop (blocks until shutdown)
     info!("daemon is running. Press Ctrl+C to stop.");
