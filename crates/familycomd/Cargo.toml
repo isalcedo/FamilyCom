@@ -24,6 +24,9 @@ serde_json.workspace = true
 # mDNS: peer discovery and service registration on local network
 mdns-sd = "0.12"
 
+# Hostname: get the local machine's hostname for mDNS registration
+hostname = "0.4"
+
 # System tray icon (Phase 6 — listed here for completeness)
 # tray-icon = "0.19"
 # muda = "0.15"

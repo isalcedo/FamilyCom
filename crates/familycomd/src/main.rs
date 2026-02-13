@@ -7,6 +7,10 @@
 //! - IPC server (Unix socket) for TUI client connections
 //! - System tray icon and desktop notifications (Phase 6)
 
+mod client;
+mod discovery;
+mod server;
+
 fn main() {
-    println!("familycomd — FamilyCom daemon (placeholder)");
+    println!("familycomd — FamilyCom daemon (placeholder, full implementation in Phase 4)");
 }
