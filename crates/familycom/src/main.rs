@@ -23,6 +23,7 @@ use app::{Action, TuiApp};
 use clap::Parser;
 use crossterm::{
     event::EventStream,
+    event::{DisableMouseCapture, EnableMouseCapture},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -114,12 +115,14 @@ async fn run_tui(mut client: IpcClient) -> Result<()> {
     // doesn't mess up the user's previous terminal content.
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
+    stdout().execute(EnableMouseCapture)?;
 
     // Set up a panic hook that restores the terminal before printing
     // the panic message. Without this, a panic would leave the terminal
     // in raw mode with the alternate screen active — very confusing.
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        let _ = stdout().execute(DisableMouseCapture);
         let _ = disable_raw_mode();
         let _ = stdout().execute(LeaveAlternateScreen);
         original_hook(info);
@@ -145,8 +148,8 @@ async fn run_tui(mut client: IpcClient) -> Result<()> {
 
     // Main event loop
     loop {
-        // Render the current state
-        terminal.draw(|frame| ui::layout::render(frame, &app))?;
+        // Render the current state (mutable borrow so layout can save panel Rects)
+        terminal.draw(|frame| ui::layout::render(frame, &mut app))?;
 
         // Wait for the next event (terminal input, daemon message, or tick)
         tokio::select! {
@@ -207,6 +210,7 @@ async fn run_tui(mut client: IpcClient) -> Result<()> {
     }
 
     // Restore terminal
+    stdout().execute(DisableMouseCapture)?;
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
 

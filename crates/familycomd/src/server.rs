@@ -79,6 +79,7 @@ impl MessageServer {
     ///
     /// Particularly useful when binding to port 0 (auto-assign) — this
     /// tells you which port the OS chose, so you can register it via mDNS.
+    #[allow(dead_code)]
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }

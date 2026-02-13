@@ -1,0 +1,65 @@
+# Maintainer: FamilyCom Contributors
+# FamilyCom — Mensajero LAN peer-to-peer
+#
+# This PKGBUILD builds from a local source tarball created by build-package.sh.
+# It follows the Arch Wiki Rust package guidelines:
+# https://wiki.archlinux.org/title/Rust_package_guidelines
+
+pkgname=familycom
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Mensajero LAN peer-to-peer para redes del hogar"
+arch=('x86_64')
+license=('MIT')
+url=""
+depends=('gtk3' 'libappindicator-gtk3' 'xdotool' 'sqlite')
+makedepends=('cargo' 'pkg-config')
+install=familycom.install
+source=("$pkgname-$pkgver.tar.gz")
+# Checksums are updated automatically by build-package.sh
+sha256sums=('1d39a08b778ccf245fa95329671fd9a98ae65731c9f5d363279acf1541644bf5')
+
+prepare() {
+    cd "$srcdir/$pkgname-$pkgver"
+
+    # Use system SQLite instead of bundled — follows Arch packaging guidelines
+    # (prefer system libraries) and avoids linker issues with makepkg's RUSTFLAGS.
+    sed -i 's/features = \["bundled"\]/features = []/' crates/familycom-core/Cargo.toml
+
+    # Use a local cargo home to avoid polluting the user's ~/.cargo
+    export CARGO_HOME="$srcdir/cargo-home"
+    cargo fetch --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$srcdir/$pkgname-$pkgver"
+
+    export CARGO_HOME="$srcdir/cargo-home"
+    export CARGO_TARGET_DIR=target
+    cargo build --workspace --release
+}
+
+check() {
+    cd "$srcdir/$pkgname-$pkgver"
+
+    export CARGO_HOME="$srcdir/cargo-home"
+    export CARGO_TARGET_DIR=target
+    cargo test --workspace
+}
+
+package() {
+    cd "$srcdir/$pkgname-$pkgver"
+
+    # Binaries
+    install -Dm755 target/release/familycomd "$pkgdir/usr/bin/familycomd"
+    install -Dm755 target/release/familycom "$pkgdir/usr/bin/familycom"
+
+    # Desktop entry (for application menus)
+    install -Dm644 config/familycom.desktop "$pkgdir/usr/share/applications/familycom.desktop"
+
+    # Icon (32x32 PNG — referenced as "familycom" in the .desktop file)
+    install -Dm644 assets/icon.png "$pkgdir/usr/share/icons/hicolor/32x32/apps/familycom.png"
+
+    # License
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

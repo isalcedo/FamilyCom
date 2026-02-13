@@ -108,6 +108,7 @@ impl IpcServer {
     }
 
     /// Returns the socket path.
+    #[allow(dead_code)]
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }

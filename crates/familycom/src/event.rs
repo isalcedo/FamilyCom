@@ -22,7 +22,7 @@
 //! | Any char     | Input       | Type that character       |
 
 use crate::app::{Action, FocusedPanel, TuiApp};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 
 /// Converts a crossterm `Event` into an optional `Action`.
 ///
@@ -31,8 +31,8 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 pub fn handle_event(event: &Event, app: &TuiApp) -> Option<Action> {
     match event {
         Event::Key(key_event) => handle_key_event(key_event, app),
-        // We could handle Event::Resize here for dynamic layout,
-        // but ratatui handles resize automatically in its render loop.
+        Event::Mouse(mouse_event) => handle_mouse_event(mouse_event, app),
+        // ratatui handles resize automatically in its render loop.
         _ => None,
     }
 }
@@ -99,4 +99,54 @@ fn handle_input_key(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char(c) => Some(Action::InputChar(c)),
         _ => None,
     }
+}
+
+/// Converts a mouse event into an action using the saved panel rectangles.
+///
+/// Supports:
+/// - Left click on peer list → select that peer row
+/// - Left click on messages/input → focus that panel
+/// - Scroll wheel in messages → scroll up/down
+fn handle_mouse_event(
+    mouse: &crossterm::event::MouseEvent,
+    app: &TuiApp,
+) -> Option<Action> {
+    let col = mouse.column;
+    let row = mouse.row;
+    let rects = &app.panel_rects;
+
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if rect_contains(rects.peers, col, row) {
+                // Clicked inside the peers panel. Compute which row was clicked.
+                // Subtract 1 for the top border of the block.
+                let inner_y = row.saturating_sub(rects.peers.y + 1);
+                Some(Action::SelectPeer(inner_y as usize))
+            } else if rect_contains(rects.messages, col, row) {
+                Some(Action::FocusPanel(FocusedPanel::Messages))
+            } else if rect_contains(rects.input, col, row) {
+                Some(Action::FocusPanel(FocusedPanel::Input))
+            } else {
+                None
+            }
+        }
+
+        MouseEventKind::ScrollUp if rect_contains(rects.messages, col, row) => {
+            Some(Action::ScrollUp)
+        }
+
+        MouseEventKind::ScrollDown if rect_contains(rects.messages, col, row) => {
+            Some(Action::ScrollDown)
+        }
+
+        _ => None,
+    }
+}
+
+/// Returns `true` if the given (column, row) is inside the rectangle.
+fn rect_contains(rect: ratatui::layout::Rect, col: u16, row: u16) -> bool {
+    col >= rect.x
+        && col < rect.x + rect.width
+        && row >= rect.y
+        && row < rect.y + rect.height
 }

@@ -62,6 +62,7 @@ pub struct DiscoveryService {
     /// The mdns-sd daemon handle. Dropping this stops the background thread.
     daemon: ServiceDaemon,
     /// Our own peer ID, used to filter out self-discovery.
+    #[allow(dead_code)]
     our_peer_id: PeerId,
     /// The full service name we registered (needed for unregistration).
     our_service_fullname: String,
@@ -282,15 +283,36 @@ impl DiscoveryService {
     /// immediately, rather than waiting for the mDNS TTL to expire.
     pub fn shutdown(self) {
         info!("unregistering mDNS service");
-        if let Err(e) = self.daemon.unregister(&self.our_service_fullname) {
-            error!(error = %e, "failed to unregister mDNS service");
+
+        // unregister() and shutdown() both return Receivers for the operation
+        // status. We must .recv() on them to wait for completion — dropping
+        // the receiver immediately would cause mdns-sd to log "failed to send
+        // response: sending on a closed channel" errors.
+        match self.daemon.unregister(&self.our_service_fullname) {
+            Ok(receiver) => {
+                if let Err(e) = receiver.recv() {
+                    debug!(error = %e, "did not receive unregister confirmation");
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "failed to unregister mDNS service");
+            }
         }
-        if let Err(e) = self.daemon.shutdown() {
-            error!(error = %e, "failed to shutdown mDNS daemon");
+
+        match self.daemon.shutdown() {
+            Ok(receiver) => {
+                if let Err(e) = receiver.recv() {
+                    debug!(error = %e, "did not receive shutdown confirmation");
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "failed to shutdown mDNS daemon");
+            }
         }
     }
 
     /// Returns our peer ID.
+    #[allow(dead_code)]
     pub fn peer_id(&self) -> &PeerId {
         &self.our_peer_id
     }

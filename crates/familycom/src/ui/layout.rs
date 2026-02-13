@@ -31,7 +31,7 @@ use ratatui::Frame;
 ///
 /// This is the top-level render function called on every frame.
 /// It divides the screen into regions and delegates to sub-renderers.
-pub fn render(frame: &mut Frame, app: &TuiApp) {
+pub fn render(frame: &mut Frame, app: &mut TuiApp) {
     let size = frame.area();
 
     // Main vertical layout: content area + input + status bar
@@ -59,6 +59,11 @@ pub fn render(frame: &mut Frame, app: &TuiApp) {
 
     let peers_area = horizontal[0];
     let messages_area = horizontal[1];
+
+    // Save panel rectangles for mouse hit-testing
+    app.panel_rects.peers = peers_area;
+    app.panel_rects.messages = messages_area;
+    app.panel_rects.input = input_area;
 
     // Render each panel
     peer_list::render(frame, app, peers_area);

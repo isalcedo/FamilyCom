@@ -69,6 +69,7 @@ impl IpcClient {
     /// Connects to the daemon at the default socket path.
     ///
     /// Returns a helpful error if the daemon is not running.
+    #[allow(dead_code)]
     pub async fn connect() -> Result<Self, IpcClientError> {
         let path = AppConfig::default_socket_path();
         Self::connect_to(&path).await

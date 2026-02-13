@@ -12,7 +12,18 @@
 
 use familycom_core::ipc::ServerMessage;
 use familycom_core::types::{Message, PeerId, PeerInfo};
+use ratatui::layout::Rect;
 use std::collections::HashMap;
+
+/// Screen rectangles of the three main panels, saved during each render pass.
+/// Used for mouse hit-testing: when the user clicks, we check which panel
+/// the click landed in.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PanelRects {
+    pub peers: Rect,
+    pub messages: Rect,
+    pub input: Rect,
+}
 
 /// Which panel currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +70,10 @@ pub enum Action {
     InputEnd,
     /// Send the current input as a message.
     SendMessage,
+    /// Set focus directly to a specific panel (from mouse click).
+    FocusPanel(FocusedPanel),
+    /// Select a peer by index and focus the peer list (from clicking a row).
+    SelectPeer(usize),
     /// A server message was received from the daemon.
     ServerMessage(ServerMessage),
 }
@@ -88,6 +103,9 @@ pub struct TuiApp {
     pub status: String,
     /// Whether the app should exit.
     pub should_quit: bool,
+    /// Screen rectangles of each panel from the last render pass.
+    /// Updated every frame so mouse clicks can be mapped to panels.
+    pub panel_rects: PanelRects,
 }
 
 impl TuiApp {
@@ -105,6 +123,7 @@ impl TuiApp {
             our_peer_id: None,
             status: "Connecting...".to_string(),
             should_quit: false,
+            panel_rects: PanelRects::default(),
         }
     }
 
@@ -237,6 +256,18 @@ impl TuiApp {
             Action::SendMessage => {
                 // Handled externally (needs IPC client) — just clear input
                 // The caller checks this action and sends via IPC before clearing.
+            }
+
+            Action::FocusPanel(panel) => {
+                self.focused = panel;
+            }
+
+            Action::SelectPeer(idx) => {
+                if !self.peers.is_empty() {
+                    self.selected_peer_idx = Some(idx.min(self.peers.len() - 1));
+                    self.focused = FocusedPanel::PeerList;
+                    self.messages_scroll = 0;
+                }
             }
 
             Action::ServerMessage(msg) => {

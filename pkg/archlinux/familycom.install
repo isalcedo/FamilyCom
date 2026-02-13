@@ -1,0 +1,44 @@
+# Hooks de instalacion para FamilyCom
+# Estos mensajes se muestran durante pacman -U / pacman -R
+
+post_install() {
+    echo ""
+    echo "==> FamilyCom instalado correctamente."
+    echo ""
+    echo "    Para iniciar el daemon (descubrimiento de red + bandeja del sistema):"
+    echo "      familycomd"
+    echo ""
+    echo "    Para que inicie automaticamente al hacer login:"
+    echo "      familycomd install"
+    echo ""
+    echo "    Para abrir la interfaz de chat (en otra terminal):"
+    echo "      familycom"
+    echo ""
+    echo "    La configuracion se genera automaticamente en la primera ejecucion"
+    echo "    en ~/.config/familycom/config.toml"
+    echo ""
+}
+
+post_upgrade() {
+    echo ""
+    echo "==> FamilyCom actualizado a $1."
+    echo ""
+    echo "    Si el daemon esta corriendo, reinicialo para usar la nueva version:"
+    echo "      pkill familycomd && familycomd &"
+    echo ""
+}
+
+pre_remove() {
+    echo ""
+    echo "==> Desinstalando FamilyCom..."
+    echo ""
+    echo "    Nota: Los siguientes archivos de usuario NO se eliminan automaticamente:"
+    echo "      ~/.config/familycom/         (configuracion)"
+    echo "      ~/.local/share/familycom/    (base de datos y logs)"
+    echo "      ~/.config/autostart/familycom.desktop  (autostart, si fue habilitado)"
+    echo ""
+    echo "    Si deseas eliminarlos manualmente:"
+    echo "      rm -rf ~/.config/familycom ~/.local/share/familycom"
+    echo "      rm -f ~/.config/autostart/familycom.desktop"
+    echo ""
+}

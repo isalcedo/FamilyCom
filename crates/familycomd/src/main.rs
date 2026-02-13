@@ -337,10 +337,20 @@ async fn main() -> Result<()> {
 
     // Clean shutdown
     info!("shutting down...");
+
+    // Tell the tray's GTK event loop to quit so the blocking bridge
+    // thread can exit and the tokio runtime shuts down cleanly.
+    if !cli.no_tray {
+        tray::request_quit();
+    }
+
     discovery.shutdown();
     info!("daemon stopped");
 
-    Ok(())
+    // Force exit to avoid hanging on lingering background threads from
+    // external libraries (mdns-sd browse loop, GTK) that don't shut down
+    // promptly. All graceful cleanup has already completed above.
+    std::process::exit(0);
 }
 
 /// Prompts the user for a display name on first run.

@@ -24,3 +24,9 @@ Thumbs.db
 
 # Log files
 *.log
+
+# Arch Linux packaging build artifacts
+pkg/archlinux/*.tar.gz
+pkg/archlinux/*.pkg.tar.zst
+pkg/archlinux/src/
+pkg/archlinux/pkg/

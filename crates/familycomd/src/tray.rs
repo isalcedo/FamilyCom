@@ -52,6 +52,15 @@ pub enum TrayEvent {
 ///
 /// Only returns when the tray event loop exits (e.g., after Quit).
 pub fn run_tray(event_tx: std_mpsc::Sender<TrayEvent>, _peer_count: usize) {
+    // Initialize GTK (required on Linux before creating tray/menu widgets).
+    // If GTK init fails (e.g., no display available), the daemon continues
+    // without a tray icon — equivalent to running with --no-tray.
+    #[cfg(target_os = "linux")]
+    if let Err(e) = gtk::init() {
+        error!(error = %e, "failed to initialize GTK, running without tray icon");
+        return;
+    }
+
     // Load the icon from the embedded PNG bytes.
     // include_bytes! embeds the file at compile time, so no runtime file I/O.
     let icon_bytes = include_bytes!("../../../assets/icon.png");
@@ -87,28 +96,56 @@ pub fn run_tray(event_tx: std_mpsc::Sender<TrayEvent>, _peer_count: usize) {
     // Subscribe to menu events
     let menu_rx = MenuEvent::receiver();
 
-    // Run the event loop.
-    // On Linux, we'd normally use GTK here, but tray-icon can work with
-    // a simple polling loop using MenuEvent::receiver().
-    // This is simpler and avoids the GTK dependency for basic tray functionality.
-    loop {
-        // Check for menu events (non-blocking poll with sleep)
-        if let Ok(event) = menu_rx.try_recv() {
-            if event.id() == &open_id {
-                debug!("tray: Open Chat clicked");
-                if event_tx.send(TrayEvent::OpenChat).is_err() {
+    // Run the platform event loop.
+    // On Linux, we must run the GTK main loop so that libappindicator
+    // can process D-Bus signals and actually render the tray icon.
+    // A simple sleep-polling loop is not enough — without GTK event
+    // dispatch, the icon is created internally but never appears.
+    #[cfg(target_os = "linux")]
+    {
+        // Poll for menu events from within the GTK event loop.
+        // glib::timeout_add_local runs a callback at regular intervals
+        // on the GTK thread, which is exactly what we need.
+        gtk::glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            if let Ok(event) = menu_rx.try_recv() {
+                if event.id() == &open_id {
+                    debug!("tray: Open Chat clicked");
+                    if event_tx.send(TrayEvent::OpenChat).is_err() {
+                        gtk::main_quit();
+                        return gtk::glib::ControlFlow::Break;
+                    }
+                } else if event.id() == &quit_id {
+                    debug!("tray: Quit clicked");
+                    let _ = event_tx.send(TrayEvent::Quit);
+                    gtk::main_quit();
+                    return gtk::glib::ControlFlow::Break;
+                }
+            }
+            gtk::glib::ControlFlow::Continue
+        });
+
+        // Blocks until gtk::main_quit() is called from the timeout callback.
+        gtk::main();
+    }
+
+    // On non-Linux platforms, use a simple polling loop with sleep.
+    #[cfg(not(target_os = "linux"))]
+    {
+        loop {
+            if let Ok(event) = menu_rx.try_recv() {
+                if event.id() == &open_id {
+                    debug!("tray: Open Chat clicked");
+                    if event_tx.send(TrayEvent::OpenChat).is_err() {
+                        break;
+                    }
+                } else if event.id() == &quit_id {
+                    debug!("tray: Quit clicked");
+                    let _ = event_tx.send(TrayEvent::Quit);
                     break;
                 }
-            } else if event.id() == &quit_id {
-                debug!("tray: Quit clicked");
-                let _ = event_tx.send(TrayEvent::Quit);
-                break;
             }
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
-
-        // Small sleep to avoid busy-waiting.
-        // 50ms gives responsive menu interaction without burning CPU.
-        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
     info!("tray event loop exited");
@@ -172,22 +209,44 @@ fn find_familycom_binary() -> String {
 
 /// Tries to launch a terminal emulator on Linux.
 ///
-/// Attempts several common terminal emulators in order of popularity.
+/// First checks the `$TERMINAL` environment variable (the standard way to
+/// specify a preferred terminal on Linux), then falls back to a list of
+/// common terminal emulators in order of popularity.
 fn try_linux_terminals(command: &str) -> Result<std::process::Child, std::io::Error> {
+    // Try the user's preferred terminal first ($TERMINAL is the de facto
+    // standard on Linux for specifying the default terminal emulator).
+    if let Ok(term) = std::env::var("TERMINAL") {
+        if !term.is_empty() {
+            debug!(terminal = %term, "trying $TERMINAL");
+            match std::process::Command::new(&term)
+                .args(["-e", command])
+                .spawn()
+            {
+                Ok(child) => return Ok(child),
+                Err(e) => {
+                    debug!(terminal = %term, error = %e, "$TERMINAL not available, trying fallbacks");
+                }
+            }
+        }
+    }
+
     // List of terminal emulators to try, with their -e flag
     let terminals = [
         ("x-terminal-emulator", vec!["-e"]),    // Debian/Ubuntu default
-        ("alacritty", vec!["-e"]),               // Popular modern terminal
-        ("kitty", vec!["--"]),                   // Another popular choice
-        ("gnome-terminal", vec!["--", "--"]),    // GNOME
-        ("konsole", vec!["-e"]),                 // KDE
-        ("xfce4-terminal", vec!["-e"]),          // XFCE
-        ("xterm", vec!["-e"]),                   // Fallback
+        ("foot", vec!["--"]),                   // Popular Wayland terminal (Arch, Sway)
+        ("alacritty", vec!["-e"]),              // Popular modern terminal
+        ("kitty", vec!["--"]),                  // Another popular choice
+        ("wezterm", vec!["start", "--"]),       // Cross-platform GPU terminal
+        ("gnome-terminal", vec!["--", "--"]),   // GNOME (legacy)
+        ("kgx", vec!["-e"]),                    // GNOME Console (modern replacement)
+        ("konsole", vec!["-e"]),                // KDE
+        ("xfce4-terminal", vec!["-e"]),         // XFCE
+        ("xterm", vec!["-e"]),                  // Fallback
     ];
 
     let mut last_error = std::io::Error::new(
         std::io::ErrorKind::NotFound,
-        "no terminal emulator found",
+        "no terminal emulator found — set $TERMINAL to your preferred terminal",
     );
 
     for (terminal, args) in &terminals {
@@ -207,4 +266,17 @@ fn try_linux_terminals(command: &str) -> Result<std::process::Child, std::io::Er
     }
 
     Err(last_error)
+}
+
+/// Asks the tray's GTK event loop to quit.
+///
+/// Called during daemon shutdown so the tray thread exits cleanly,
+/// which in turn unblocks the `spawn_blocking` bridge task.
+/// Safe to call even if the tray was never started (GTK handles it).
+pub fn request_quit() {
+    #[cfg(target_os = "linux")]
+    gtk::glib::idle_add(|| {
+        gtk::main_quit();
+        gtk::glib::ControlFlow::Break
+    });
 }
