@@ -1,0 +1,43 @@
+[package]
+name = "familycom-core"
+description = "Shared types, protocols, and database layer for FamilyCom LAN messenger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Serialization: used for both wire protocol (MessagePack) and IPC (JSON)
+serde.workspace = true
+serde_json.workspace = true
+rmp-serde.workspace = true
+
+# SQLite: bundled compiles SQLite from source so no system dependency needed
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Async I/O: for reading/writing protocol frames over TCP streams
+tokio = { workspace = true, features = ["io-util"] }
+
+# Error types: derive(Error) for ergonomic custom errors
+thiserror.workspace = true
+
+# UUID: unique identifiers for peers and messages
+uuid.workspace = true
+
+# Timestamps: human-readable formatting of message times
+chrono = { version = "0.4", features = ["serde"] }
+
+# Config file parsing
+toml.workspace = true
+
+# Platform-specific directories (~/.config, ~/Library, etc.)
+dirs.workspace = true
+
+# Logging
+tracing.workspace = true
+
+[dev-dependencies]
+# Async test runtime
+tokio = { workspace = true, features = ["rt", "macros"] }
+# Temp directories for test databases
+tempfile = "3"

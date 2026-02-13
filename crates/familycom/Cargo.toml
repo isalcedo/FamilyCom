@@ -1,0 +1,46 @@
+[package]
+name = "familycom"
+description = "FamilyCom LAN messenger TUI client — terminal interface for chatting with peers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "familycom"
+path = "src/main.rs"
+
+[dependencies]
+# Shared library with types, DB, and protocol definitions
+familycom-core.workspace = true
+
+# Async runtime: powers IPC connection to daemon and event stream
+tokio.workspace = true
+tokio-stream.workspace = true
+
+# Serialization for IPC messages
+serde.workspace = true
+serde_json.workspace = true
+
+# TUI framework: immediate-mode terminal rendering
+ratatui = "0.29"
+
+# Terminal backend: cross-platform terminal manipulation (raw mode, events, colors)
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+# CLI argument parsing
+clap.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Platform directories
+dirs.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

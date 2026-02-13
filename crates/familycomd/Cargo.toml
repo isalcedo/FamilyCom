@@ -1,0 +1,56 @@
+[package]
+name = "familycomd"
+description = "FamilyCom LAN messenger daemon — background service with mDNS discovery, TCP messaging, and system tray"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "familycomd"
+path = "src/main.rs"
+
+[dependencies]
+# Shared library with types, DB, and protocol definitions
+familycom-core.workspace = true
+
+# Async runtime: powers TCP server/client, Unix socket IPC, timers
+tokio.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# mDNS: peer discovery and service registration on local network
+mdns-sd = "0.12"
+
+# System tray icon (Phase 6 — listed here for completeness)
+# tray-icon = "0.19"
+# muda = "0.15"
+
+# Desktop notifications (Phase 6)
+# notify-rust = "4"
+
+# CLI argument parsing
+clap.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# UUID generation
+uuid.workspace = true
+
+# Config file
+toml.workspace = true
+
+# Platform directories
+dirs.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+tempfile = "3"
