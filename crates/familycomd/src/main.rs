@@ -1,16 +1,249 @@
 //! FamilyCom Daemon — the background service that powers LAN messaging.
 //!
-//! This binary handles:
-//! - mDNS service registration and peer discovery
-//! - TCP server/client for receiving and sending messages
-//! - SQLite persistence for messages and peer data
-//! - IPC server (Unix socket) for TUI client connections
-//! - System tray icon and desktop notifications (Phase 6)
+//! # Usage
+//!
+//! ```bash
+//! familycomd                    # Start the daemon
+//! familycomd --name "PC-Sala"   # Start with a specific display name
+//! familycomd --port 9876        # Use a specific TCP port
+//! ```
+//!
+//! On first run, the daemon generates a unique peer ID and prompts for
+//! a display name (if running in an interactive terminal). The config
+//! is saved to `~/.config/familycom/config.toml`.
+//!
+//! # Architecture
+//!
+//! The daemon spawns several concurrent tasks:
+//! 1. mDNS discovery (background thread via mdns-sd)
+//! 2. TCP message server (tokio task)
+//! 3. IPC server on Unix socket (tokio task)
+//! 4. Main event loop in DaemonApp (tokio task)
 
+mod app;
 mod client;
 mod discovery;
+mod ipc_server;
 mod server;
 
-fn main() {
-    println!("familycomd — FamilyCom daemon (placeholder, full implementation in Phase 4)");
+use anyhow::{Context, Result};
+use app::DaemonApp;
+use clap::Parser;
+use discovery::DiscoveryService;
+use familycom_core::config::AppConfig;
+use familycom_core::db::Database;
+use ipc_server::IpcServer;
+use server::MessageServer;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use tokio::sync::mpsc;
+use tracing::{error, info};
+
+/// FamilyCom daemon — LAN messaging background service.
+#[derive(Parser, Debug)]
+#[command(name = "familycomd", about = "FamilyCom LAN messenger daemon")]
+struct Cli {
+    /// Display name for this machine on the network.
+    /// Overrides the name in config.toml for this run.
+    #[arg(short, long)]
+    name: Option<String>,
+
+    /// TCP port for peer-to-peer messaging (0 = auto-assign).
+    #[arg(short, long, default_value = "0")]
+    port: u16,
+
+    /// Path to the configuration file.
+    #[arg(long)]
+    config: Option<PathBuf>,
+
+    /// Path to the SQLite database file.
+    #[arg(long)]
+    db: Option<PathBuf>,
+
+    /// Path to the Unix socket for IPC.
+    #[arg(long)]
+    socket: Option<PathBuf>,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Initialize logging.
+    // The FAMILYCOM_LOG env var controls the log level (default: info).
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_env("FAMILYCOM_LOG")
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    let cli = Cli::parse();
+
+    // -----------------------------------------------------------------------
+    // Load or create configuration
+    // -----------------------------------------------------------------------
+    let config_path = match &cli.config {
+        Some(path) => path.clone(),
+        None => AppConfig::config_file_path().context("could not determine config directory")?,
+    };
+
+    let mut config = match AppConfig::load_from(&config_path)? {
+        Some(config) => {
+            info!(path = %config_path.display(), "loaded config");
+            config
+        }
+        None => {
+            // First run — generate peer ID and get display name
+            info!("first run detected, creating new config");
+            let display_name = get_display_name()?;
+            let config = AppConfig::new_first_run(&display_name);
+            config.save_to(&config_path)?;
+            info!(
+                path = %config_path.display(),
+                peer_id = %config.peer_id,
+                display_name = %config.display_name,
+                "saved new config"
+            );
+            config
+        }
+    };
+
+    // CLI overrides
+    if let Some(name) = &cli.name {
+        config.display_name = name.clone();
+    }
+    if cli.port != 0 {
+        config.tcp_port = cli.port;
+    }
+
+    // -----------------------------------------------------------------------
+    // Open database
+    // -----------------------------------------------------------------------
+    let db_path = match &cli.db {
+        Some(path) => path.clone(),
+        None => AppConfig::default_db_path().context("could not determine data directory")?,
+    };
+
+    // Ensure the parent directory exists
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let db = Database::open(&db_path).context("failed to open database")?;
+    info!(path = %db_path.display(), "database opened");
+
+    // -----------------------------------------------------------------------
+    // Start TCP message server
+    // -----------------------------------------------------------------------
+    let bind_addr = format!("0.0.0.0:{}", config.tcp_port);
+    let tcp_server = MessageServer::bind(&bind_addr)
+        .await
+        .context("failed to start TCP server")?;
+
+    let tcp_port = tcp_server.port();
+    info!(port = tcp_port, "TCP message server started");
+
+    // -----------------------------------------------------------------------
+    // Start mDNS discovery
+    // -----------------------------------------------------------------------
+    let peer_id = familycom_core::types::PeerId::new(&config.peer_id);
+    let (discovery, discovery_rx) =
+        DiscoveryService::new(peer_id, &config.display_name, tcp_port)
+            .context("failed to start mDNS discovery")?;
+
+    // -----------------------------------------------------------------------
+    // Start IPC server
+    // -----------------------------------------------------------------------
+    let socket_path = match &cli.socket {
+        Some(path) => path.clone(),
+        None => AppConfig::default_socket_path(),
+    };
+
+    let ipc_server = IpcServer::bind(&socket_path)
+        .await
+        .context("failed to start IPC server")?;
+
+    info!(path = %socket_path.display(), "IPC server started");
+
+    // -----------------------------------------------------------------------
+    // Create the daemon app and wire everything together
+    // -----------------------------------------------------------------------
+    let mut daemon_app = DaemonApp::new(db, config);
+    let event_tx = daemon_app.event_sender();
+
+    // Channels for inter-task communication
+    let (message_tx, message_rx) = mpsc::channel(256);
+    let (ipc_request_tx, ipc_request_rx) = mpsc::channel(64);
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
+
+    // Spawn the TCP server accept loop
+    tokio::spawn(async move {
+        tcp_server.accept_loop(message_tx).await;
+    });
+
+    // Spawn the IPC server accept loop
+    tokio::spawn(async move {
+        ipc_server.accept_loop(ipc_request_tx, event_tx).await;
+    });
+
+    // Set up signal handler for graceful shutdown
+    let shutdown_tx_clone = shutdown_tx.clone();
+    tokio::spawn(async move {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                info!("received Ctrl+C, initiating shutdown");
+                let _ = shutdown_tx_clone.send(()).await;
+            }
+            Err(e) => {
+                error!(error = %e, "failed to listen for Ctrl+C");
+            }
+        }
+    });
+
+    // Run the main event loop (blocks until shutdown)
+    info!("daemon is running. Press Ctrl+C to stop.");
+    daemon_app
+        .run(discovery_rx, message_rx, ipc_request_rx, shutdown_rx)
+        .await;
+
+    // Clean shutdown
+    info!("shutting down...");
+    discovery.shutdown();
+    info!("daemon stopped");
+
+    Ok(())
+}
+
+/// Prompts the user for a display name on first run.
+///
+/// If stdin is not a terminal (e.g., launched by autostart), falls back
+/// to the system hostname.
+fn get_display_name() -> Result<String> {
+    // Check if we're running in an interactive terminal
+    if atty_is_terminal() {
+        print!("Enter a display name for this machine: ");
+        io::stdout().flush()?;
+        let mut name = String::new();
+        io::stdin().read_line(&mut name)?;
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            // Fall back to hostname if user just pressed Enter
+            return Ok(get_hostname());
+        }
+        Ok(name)
+    } else {
+        // Non-interactive — use hostname
+        Ok(get_hostname())
+    }
+}
+
+/// Checks if stdin is connected to a terminal.
+fn atty_is_terminal() -> bool {
+    std::io::IsTerminal::is_terminal(&std::io::stdin())
+}
+
+/// Gets the system hostname as a fallback display name.
+fn get_hostname() -> String {
+    hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "FamilyCom-User".to_string())
 }
