@@ -49,13 +49,16 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging to a file (not to stderr, which would mess up the TUI).
-    // In production we'd log to ~/.local/share/familycom/tui.log,
-    // but for now we just disable logging unless FAMILYCOM_LOG is set.
+    // Logs go to ~/.local/share/familycom/tui.log when FAMILYCOM_LOG is set.
+    // We never log to stderr because ratatui owns the terminal.
     if std::env::var("FAMILYCOM_LOG").is_ok() {
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_env("FAMILYCOM_LOG"))
-            .with_writer(std::io::stderr)
-            .init();
+        if let Some(log_file) = open_log_file("tui.log") {
+            tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_env("FAMILYCOM_LOG"))
+                .with_writer(std::sync::Mutex::new(log_file))
+                .with_ansi(false) // No ANSI colors in log files
+                .init();
+        }
     }
 
     let cli = Cli::parse();
@@ -296,4 +299,18 @@ async fn set_display_name(name: &str, socket: &Option<std::path::PathBuf>) -> Re
             std::process::exit(1);
         }
     }
+}
+
+/// Opens a log file in the FamilyCom data directory for append-mode writing.
+///
+/// Returns `None` if the data directory can't be determined or the file
+/// can't be opened (the TUI will still work, just without logging).
+fn open_log_file(filename: &str) -> Option<std::fs::File> {
+    let dir = familycom_core::config::AppConfig::data_dir()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(filename))
+        .ok()
 }

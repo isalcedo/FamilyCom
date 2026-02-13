@@ -7,6 +7,8 @@
 //! familycomd --no-tray          # Start without system tray (headless)
 //! familycomd --name "PC-Sala"   # Start with a specific display name
 //! familycomd --port 9876        # Use a specific TCP port
+//! familycomd install            # Set up autostart on login
+//! familycomd uninstall          # Remove autostart configuration
 //! ```
 //!
 //! On first run, the daemon generates a unique peer ID and prompts for
@@ -23,6 +25,7 @@
 //! 5. Main event loop in DaemonApp (tokio task)
 
 mod app;
+mod autostart;
 mod client;
 mod discovery;
 mod ipc_server;
@@ -32,7 +35,7 @@ mod tray;
 
 use anyhow::{Context, Result};
 use app::DaemonApp;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use discovery::DiscoveryService;
 use familycom_core::config::AppConfig;
 use familycom_core::db::Database;
@@ -48,6 +51,10 @@ use tracing::{error, info, warn};
 #[derive(Parser, Debug)]
 #[command(name = "familycomd", about = "FamilyCom LAN messenger daemon")]
 struct Cli {
+    /// Subcommand to run (install, uninstall). If omitted, starts the daemon.
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Display name for this machine on the network.
     /// Overrides the name in config.toml for this run.
     #[arg(short, long)]
@@ -74,18 +81,48 @@ struct Cli {
     no_tray: bool,
 }
 
+/// Subcommands for managing the daemon installation.
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Set up autostart so the daemon launches on login.
+    ///
+    /// On Linux, creates a .desktop file in ~/.config/autostart/.
+    /// On macOS, creates a LaunchAgent plist in ~/Library/LaunchAgents/.
+    Install {
+        /// Show what would be done without making changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove the autostart configuration.
+    ///
+    /// Removes the autostart file created by `install`.
+    Uninstall {
+        /// Show what would be done without making changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Handle subcommands before initializing the full daemon.
+    // Install/uninstall don't need logging, async runtime, etc.
+    match &cli.command {
+        Some(Command::Install { dry_run }) => {
+            return autostart::install(*dry_run);
+        }
+        Some(Command::Uninstall { dry_run }) => {
+            return autostart::uninstall(*dry_run);
+        }
+        None => {} // No subcommand — start the daemon
+    }
+
     // Initialize logging.
     // The FAMILYCOM_LOG env var controls the log level (default: info).
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("FAMILYCOM_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
-    let cli = Cli::parse();
+    // Logs go to both stderr and a log file in the data directory.
+    init_logging();
 
     // -----------------------------------------------------------------------
     // Load or create configuration
@@ -339,4 +376,51 @@ fn get_hostname() -> String {
     hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "FamilyCom-User".to_string())
+}
+
+/// Initializes the tracing logging infrastructure.
+///
+/// Sets up a layered subscriber that writes to:
+/// 1. stderr — so logs appear in the terminal when running interactively
+/// 2. A log file at `~/.local/share/familycom/daemon.log` — persists across runs
+///
+/// The log level is controlled by the `FAMILYCOM_LOG` environment variable.
+/// Defaults to `info` if not set.
+fn init_logging() {
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{fmt, EnvFilter};
+
+    let env_filter = EnvFilter::try_from_env("FAMILYCOM_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    // Always log to stderr for interactive use
+    let stderr_layer = fmt::layer()
+        .with_writer(std::io::stderr);
+
+    // Try to set up file logging; if it fails, daemon still works with stderr only
+    let file_layer = AppConfig::data_dir()
+        .and_then(|dir| {
+            std::fs::create_dir_all(&dir).ok()?;
+            let log_path = dir.join("daemon.log");
+            // Open the log file in append mode so we don't lose previous logs
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)
+                .ok()
+        })
+        .map(|file| {
+            fmt::layer()
+                .with_writer(std::sync::Mutex::new(file))
+                .with_ansi(false) // No ANSI color codes in the log file
+        });
+
+    // Build the subscriber with both layers.
+    // The file layer is optional — if the log file couldn't be opened,
+    // only stderr logging is active.
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stderr_layer)
+        .with(file_layer)
+        .init();
 }

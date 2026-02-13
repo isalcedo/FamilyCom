@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=FamilyCom
+Comment=LAN Messenger Daemon
+Exec=familycomd
+Icon=familycom
+Terminal=false
+Categories=Network;Chat;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
