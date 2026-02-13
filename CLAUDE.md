@@ -16,13 +16,36 @@ Peer-to-peer LAN messaging app for home use. Auto-discovers peers via mDNS, send
 - **JSON lines** for daemon<->TUI IPC (debuggable with socat)
 - **Platform-conditional threading**: GTK tray thread on Linux, NSApp main thread on macOS
 
-## Build
+## Build & Install
 ```bash
-cargo build --workspace          # debug build
-cargo build --workspace --release # release build
-cargo test --workspace           # run all tests
-cargo clippy --workspace -- -D warnings  # lint
+make              # debug build
+make release      # optimized release build
+make test         # run all 46 tests
+make clippy       # lint (strict: warnings = errors)
+make install      # release build + install to ~/.local/bin/ + autostart
+make uninstall    # remove binaries + autostart config
 ```
+
+Or directly with cargo:
+```bash
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace -- -D warnings -A dead_code
+```
+
+### Daemon subcommands
+```bash
+familycomd                    # start daemon (with tray)
+familycomd --no-tray          # start headless
+familycomd install            # set up autostart on login
+familycomd install --dry-run  # preview without changes
+familycomd uninstall          # remove autostart
+```
+
+### Logging
+- Daemon logs to stderr + `~/.local/share/familycom/daemon.log`
+- TUI logs to `~/.local/share/familycom/tui.log` (only when `FAMILYCOM_LOG` is set)
+- Control log level: `FAMILYCOM_LOG=debug familycomd`
 
 ## System Dependencies
 ### Linux (Arch)
