@@ -27,6 +27,9 @@ mdns-sd = "0.12"
 # Hostname: get the local machine's hostname for mDNS registration
 hostname = "0.4"
 
+# Network interface detection: find the default-route interface to restrict mDNS
+netdev = "0.40"
+
 # System tray icon: cross-platform tray icon from the Tauri team
 tray-icon = "0.19"
 # Tray menus: companion crate for tray-icon menu items

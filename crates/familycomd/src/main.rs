@@ -193,7 +193,7 @@ async fn main() -> Result<()> {
     // -----------------------------------------------------------------------
     let peer_id = familycom_core::types::PeerId::new(&config.peer_id);
     let (discovery, discovery_rx) =
-        DiscoveryService::new(peer_id, &config.display_name, tcp_port)
+        DiscoveryService::new(peer_id, &config.display_name, tcp_port, config.network_interface.as_deref())
             .context("failed to start mDNS discovery")?;
 
     // -----------------------------------------------------------------------

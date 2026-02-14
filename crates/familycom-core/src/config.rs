@@ -13,6 +13,7 @@
 //! peer_id = "550e8400-e29b-41d4-a716-446655440000"
 //! display_name = "PC-Sala"
 //! tcp_port = 0        # 0 means auto-assign
+//! # network_interface = "enp5s0"  # optional: restrict mDNS to this interface
 //! ```
 
 use crate::types::PeerId;
@@ -70,6 +71,12 @@ pub struct AppConfig {
     /// If not set, a platform-appropriate default is used.
     #[serde(default)]
     pub terminal_command: Option<String>,
+
+    /// Optional: restrict mDNS to this network interface (e.g. "enp5s0").
+    /// If not set, the default-route interface is auto-detected.
+    /// Useful when Docker or VPN interfaces cause mDNS conflicts.
+    #[serde(default)]
+    pub network_interface: Option<String>,
 }
 
 impl AppConfig {
@@ -185,6 +192,7 @@ impl AppConfig {
             display_name: display_name.to_string(),
             tcp_port: 0,
             terminal_command: None,
+            network_interface: None,
         }
     }
 }
@@ -209,6 +217,7 @@ mod tests {
             display_name: "Mi Computador".to_string(),
             tcp_port: 9876,
             terminal_command: None,
+            network_interface: None,
         };
 
         config.save_to(&path).unwrap();
@@ -248,6 +257,7 @@ mod tests {
             display_name: "Habitación de Mamá".to_string(),
             tcp_port: 0,
             terminal_command: None,
+            network_interface: None,
         };
 
         config.save_to(&path).unwrap();

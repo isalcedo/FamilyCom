@@ -22,7 +22,7 @@
 //! indicates we use TCP for the actual communication.
 
 use familycom_core::types::{PeerId, PeerInfo, Timestamp};
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::collections::HashMap;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -81,6 +81,8 @@ impl DiscoveryService {
     /// * `peer_id` - Our unique peer identifier
     /// * `display_name` - Our human-readable name (shown to other peers)
     /// * `tcp_port` - The TCP port our message server is listening on
+    /// * `network_interface` - Optional interface name override (e.g. "enp5s0").
+    ///   If `None`, auto-detects the default-route interface via `netdev`.
     ///
     /// # Returns
     ///
@@ -90,10 +92,37 @@ impl DiscoveryService {
         peer_id: PeerId,
         display_name: &str,
         tcp_port: u16,
+        network_interface: Option<&str>,
     ) -> Result<(Self, mpsc::Receiver<DiscoveryEvent>), DiscoveryError> {
         // Create the mDNS daemon. This starts a background thread that
         // handles all multicast networking.
         let daemon = ServiceDaemon::new().map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
+
+        // Determine which network interface to use for mDNS.
+        // Without filtering, mDNS probes on ALL interfaces (including Docker
+        // bridges, VPNs, etc.) which causes conflicts and unreachable addresses.
+        let iface_name = match network_interface {
+            Some(name) => name.to_string(),
+            None => {
+                // Auto-detect: use the interface that holds the default route
+                netdev::get_default_interface()
+                    .map(|iface| iface.name)
+                    .unwrap_or_else(|e| {
+                        warn!(error = %e, "could not detect default network interface, using all");
+                        String::new()
+                    })
+            }
+        };
+
+        if !iface_name.is_empty() {
+            info!(interface = %iface_name, "restricting mDNS to interface");
+            daemon
+                .disable_interface(IfKind::All)
+                .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
+            daemon
+                .enable_interface(IfKind::Name(iface_name))
+                .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
+        }
 
         // Build our service info. The service name is a human-readable label
         // (display_name), but the actual identification happens via the TXT
