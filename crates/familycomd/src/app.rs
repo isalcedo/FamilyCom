@@ -159,24 +159,15 @@ impl DaemonApp {
             }
 
             DiscoveryEvent::PeerLost(peer_id) => {
-                // The peer_id from ServiceRemoved might be the mDNS fullname,
-                // not the actual peer UUID. Try to find the matching peer.
-                let lost_peer = self.online_peers.iter()
-                    .find(|(_, info)| {
-                        // Match either by direct PeerId or by checking if the
-                        // mDNS fullname contains the display name
-                        info.id == peer_id
-                    })
-                    .map(|(id, _)| id.clone());
-
-                if let Some(id) = lost_peer {
-                    info!(peer_id = %id, "peer went offline");
-                    self.online_peers.remove(&id);
+                // The discovery module now maps mDNS fullnames to UUID-based
+                // PeerIds, so we can look up directly by key.
+                if self.online_peers.remove(&peer_id).is_some() {
+                    info!(peer_id = %peer_id, "peer went offline");
                     let _ = self.event_tx.send(ServerMessage::PeerOffline {
-                        peer_id: id,
+                        peer_id,
                     });
                 } else {
-                    debug!(raw_id = %peer_id, "received PeerLost for unknown peer");
+                    debug!(peer_id = %peer_id, "received PeerLost for unknown peer");
                 }
             }
         }

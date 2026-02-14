@@ -119,16 +119,20 @@ impl DiscoveryService {
             daemon
                 .disable_interface(IfKind::All)
                 .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
-            // Disable IPv6 BEFORE enabling the named interface, so that when
-            // the interface is added it only picks up IPv4 addresses.
-            // Our TCP server binds to 0.0.0.0 (IPv4 only), and dual-stack
-            // mDNS probing causes conflicts between A and AAAA records on
-            // the same interface, preventing successful service announcement.
-            daemon
-                .disable_interface(IfKind::IPv6)
-                .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
             daemon
                 .enable_interface(IfKind::Name(iface_name))
+                .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
+            // Disable IPv6 AFTER enabling the named interface. The mdns-sd
+            // crate processes interface selections as an ordered list where
+            // the last matching rule wins. If we disable IPv6 before the
+            // named enable, the enable overrides it (Name matches both v4
+            // and v6 addresses). Placing the IPv6 disable last ensures it
+            // takes precedence for any IPv6 address on the interface.
+            // This is needed because our TCP server binds to 0.0.0.0 (IPv4
+            // only), and dual-stack mDNS causes resolution failures between
+            // peers (IPv6 link-local addresses lack zone IDs in std::net).
+            daemon
+                .disable_interface(IfKind::IPv6)
                 .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
         }
 
@@ -216,6 +220,11 @@ impl DiscoveryService {
         event_tx: mpsc::Sender<DiscoveryEvent>,
         our_peer_id: &PeerId,
     ) {
+        // Track mDNS fullname → PeerId so we can emit correct PeerLost events.
+        // ServiceRemoved only gives us the fullname (e.g. "ChuiMachine._familycom._tcp.local."),
+        // not the TXT records with the UUID peer_id. This map lets us look it up.
+        let mut fullname_to_peer_id: HashMap<String, PeerId> = HashMap::new();
+
         // recv() blocks until an event is available or the channel is closed
         while let Ok(event) = browse_receiver.recv() {
             match event {
@@ -264,6 +273,12 @@ impl DiscoveryService {
                         continue;
                     }
 
+                    // Remember the fullname → peer_id mapping for ServiceRemoved
+                    fullname_to_peer_id.insert(
+                        info.get_fullname().to_string(),
+                        peer_id.clone(),
+                    );
+
                     let peer_info = PeerInfo {
                         id: peer_id.clone(),
                         display_name: display_name.clone(),
@@ -288,19 +303,33 @@ impl DiscoveryService {
 
                 ServiceEvent::ServiceRemoved(_, fullname) => {
                     // A service was removed (peer went offline or unregistered).
-                    // Unfortunately, the removed event doesn't include TXT records,
-                    // so we extract what we can from the service name.
-                    info!(service = fullname, "peer service removed");
-
-                    // We can't reliably extract the peer_id from just the fullname.
-                    // The daemon will need to match this by service name or handle
-                    // it via periodic peer health checks.
-                    // For now, we emit PeerLost with a PeerId derived from the fullname.
-                    // The daemon can cross-reference with its known peers.
-                    let peer_id = PeerId::new(fullname);
-                    if event_tx.blocking_send(DiscoveryEvent::PeerLost(peer_id)).is_err() {
-                        break;
+                    // Look up the real PeerId from our fullname map so the daemon
+                    // can correctly remove the peer from its online_peers.
+                    if let Some(peer_id) = fullname_to_peer_id.remove(&fullname) {
+                        info!(
+                            peer_id = %peer_id,
+                            service = fullname,
+                            "peer service removed"
+                        );
+                        if event_tx.blocking_send(DiscoveryEvent::PeerLost(peer_id)).is_err() {
+                            break;
+                        }
+                    } else {
+                        debug!(
+                            service = fullname,
+                            "service removed for unknown fullname, ignoring"
+                        );
                     }
+                }
+
+                ServiceEvent::ServiceFound(service_type, fullname) => {
+                    // Intermediate step: the library found a PTR record pointing
+                    // to this service. Resolution (SRV/TXT/A queries) follows.
+                    info!(
+                        service_type,
+                        fullname,
+                        "mDNS service found (pending resolution)"
+                    );
                 }
 
                 ServiceEvent::SearchStarted(service_type) => {
@@ -310,9 +339,6 @@ impl DiscoveryService {
                 ServiceEvent::SearchStopped(service_type) => {
                     debug!(service_type, "mDNS search stopped");
                 }
-
-                // Other events (ServiceFound is an intermediate step before ServiceResolved)
-                _ => {}
             }
         }
 
