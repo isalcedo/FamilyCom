@@ -11,13 +11,13 @@ pkgrel=1
 pkgdesc="Mensajero LAN peer-to-peer para redes del hogar"
 arch=('x86_64')
 license=('MIT')
-url=""
+url="https://github.com/familycom/familycom"
 depends=('gtk3' 'libappindicator-gtk3' 'xdotool' 'sqlite')
 makedepends=('cargo' 'pkg-config')
 install=familycom.install
 source=("$pkgname-$pkgver.tar.gz")
 # Checksums are updated automatically by build-package.sh
-sha256sums=('0ed9ce93c0ef7ba1c9ecdbc7889d97381a65a0fe72e2d858c76af93666ff456a')
+sha256sums=('7a71b3d4d137c04ece7c437ad09ce3042489d4f0e1c9d38c4a97c7a59b78b819')
 
 prepare() {
     cd "$srcdir/$pkgname-$pkgver"
@@ -28,6 +28,13 @@ prepare() {
 
     # Use a local cargo home to avoid polluting the user's ~/.cargo
     export CARGO_HOME="$srcdir/cargo-home"
+
+    # Refresh the lockfile after the feature change above — the bundled→system
+    # SQLite switch can alter the dependency graph (e.g. dropping the cc crate),
+    # so --locked would fail here. We use `cargo update -w` to re-resolve only
+    # workspace crates, then fetch all dependencies. build()/check() still use
+    # --frozen to guarantee no further network access or lockfile changes.
+    cargo update -w
     cargo fetch --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
@@ -36,7 +43,7 @@ build() {
 
     export CARGO_HOME="$srcdir/cargo-home"
     export CARGO_TARGET_DIR=target
-    cargo build --workspace --release
+    cargo build --frozen --workspace --release
 }
 
 check() {
@@ -44,7 +51,7 @@ check() {
 
     export CARGO_HOME="$srcdir/cargo-home"
     export CARGO_TARGET_DIR=target
-    cargo test --workspace
+    cargo test --frozen --workspace
 }
 
 package() {

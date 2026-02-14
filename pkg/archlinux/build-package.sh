@@ -7,7 +7,7 @@
 #   ./pkg/archlinux/build-package.sh --install # construir e instalar
 #
 # Este script:
-#   1. Crea un tarball del codigo fuente (excluyendo target/, .git/, pkg/)
+#   1. Crea un tarball del codigo fuente (excluyendo target/, .git/, pkg/, thoughts/)
 #   2. Genera el checksum SHA256 en el PKGBUILD
 #   3. Ejecuta makepkg para construir el paquete
 #   4. Muestra instrucciones para instalar
@@ -19,9 +19,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PKG_DIR="$SCRIPT_DIR"
 
-# Metadata (must match PKGBUILD)
-PKGNAME="familycom"
-PKGVER="0.1.0"
+# Metadata — extract from PKGBUILD to avoid version drift
+PKGNAME=$(sed -n 's/^pkgname=//p' "$PKG_DIR/PKGBUILD")
+PKGVER=$(sed -n 's/^pkgver=//p' "$PKG_DIR/PKGBUILD")
 TARBALL="${PKGNAME}-${PKGVER}.tar.gz"
 
 # --- Verify we're in the right place ---
@@ -39,13 +39,14 @@ fi
 
 echo "==> Creando tarball del codigo fuente..."
 
-# Create the tarball from project root, placing files under familycom-0.1.0/
-# Exclude build artifacts, git directory, and packaging directory
+# Create the tarball from project root, placing files under familycom-$PKGVER/
+# Exclude build artifacts, git directory, packaging, and non-source directories
 tar -czf "$PKG_DIR/$TARBALL" \
     --transform "s,^.,${PKGNAME}-${PKGVER}," \
     --exclude='./target' \
     --exclude='./.git' \
     --exclude='./pkg' \
+    --exclude='./thoughts' \
     -C "$PROJECT_ROOT" .
 
 echo "    Tarball: $PKG_DIR/$TARBALL"
@@ -61,9 +62,10 @@ echo "==> Construyendo paquete con makepkg..."
 echo ""
 
 # Run makepkg from the packaging directory
+# -C: clean old src/ and pkg/ directories before building
 # -s: install missing dependencies (asks for sudo)
 # -f: force rebuild even if package already exists
-(cd "$PKG_DIR" && makepkg -sf)
+(cd "$PKG_DIR" && makepkg -Csf)
 
 # --- Find the built package ---
 PKG_FILE=$(ls -t "$PKG_DIR"/${PKGNAME}-${PKGVER}-*.pkg.tar.zst 2>/dev/null | head -1)
