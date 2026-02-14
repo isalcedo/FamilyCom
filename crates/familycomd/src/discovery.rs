@@ -119,14 +119,16 @@ impl DiscoveryService {
             daemon
                 .disable_interface(IfKind::All)
                 .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
-            daemon
-                .enable_interface(IfKind::Name(iface_name))
-                .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
-            // Disable IPv6 multicast: our TCP server binds to 0.0.0.0 (IPv4 only),
-            // and dual-stack mDNS probing causes conflicts between A and AAAA records
-            // on the same interface, preventing successful service announcement.
+            // Disable IPv6 BEFORE enabling the named interface, so that when
+            // the interface is added it only picks up IPv4 addresses.
+            // Our TCP server binds to 0.0.0.0 (IPv4 only), and dual-stack
+            // mDNS probing causes conflicts between A and AAAA records on
+            // the same interface, preventing successful service announcement.
             daemon
                 .disable_interface(IfKind::IPv6)
+                .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
+            daemon
+                .enable_interface(IfKind::Name(iface_name))
                 .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
         }
 
