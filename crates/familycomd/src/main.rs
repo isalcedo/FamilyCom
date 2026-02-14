@@ -253,20 +253,35 @@ async fn main() -> Result<()> {
     // Subscribe to daemon events for notifications
     let mut notification_rx = daemon_app.event_sender().subscribe();
 
-    // Spawn notification handler task
+    // Spawn notification handler task.
+    // We track peer display names from PeerOnline events so that
+    // notifications show the sender's actual name (e.g., "PC-Sala")
+    // instead of a generic "Peer" label.
     tokio::spawn(async move {
+        let mut peer_names: std::collections::HashMap<
+            familycom_core::types::PeerId,
+            String,
+        > = std::collections::HashMap::new();
+
         loop {
             match notification_rx.recv().await {
+                Ok(familycom_core::ipc::ServerMessage::PeerOnline { ref peer }) => {
+                    // Remember display names so we can use them in notifications
+                    peer_names.insert(peer.id.clone(), peer.display_name.clone());
+                }
                 Ok(familycom_core::ipc::ServerMessage::NewMessage { ref message }) => {
                     if message.direction == familycom_core::types::Direction::Received {
-                        // Get the sender name from the message content context
-                        // We pass a preview of the message
+                        let sender_name = peer_names
+                            .get(&message.peer_id)
+                            .map(|s| s.as_str())
+                            .unwrap_or("Peer");
+
                         let preview = if message.content.len() > 100 {
                             format!("{}...", &message.content[..message.content.floor_char_boundary(97)])
                         } else {
                             message.content.clone()
                         };
-                        notification_mgr.notify_new_message("Peer", &preview);
+                        notification_mgr.notify_new_message(sender_name, &preview);
                     }
                 }
                 Ok(_) => {} // Other events don't need notifications

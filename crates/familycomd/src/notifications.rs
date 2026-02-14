@@ -64,17 +64,32 @@ impl NotificationManager {
             preview.to_string()
         };
 
-        // Send the notification using notify-rust
+        // Send the notification using notify-rust.
+        // The "default" action fires when the user clicks the notification body
+        // (standard D-Bus notification behavior on Linux).
         let result = notify_rust::Notification::new()
             .summary(&format!("FamilyCom - {sender_name}"))
             .body(&truncated_preview)
+            .action("default", "Abrir Chat")
             .timeout(notify_rust::Timeout::Milliseconds(5000))
             .show();
 
         match result {
-            Ok(_) => {
+            Ok(handle) => {
                 debug!(sender = sender_name, "notification sent");
                 self.last_notification = Some(Instant::now());
+
+                // Spawn a short-lived thread to wait for the user's click.
+                // wait_for_action() blocks until the notification is clicked,
+                // dismissed, or times out (5s). Rate limiting ensures at most
+                // ~5 of these threads exist concurrently.
+                std::thread::spawn(move || {
+                    handle.wait_for_action(|action| {
+                        if action == "default" {
+                            crate::tray::open_chat_in_terminal();
+                        }
+                    });
+                });
             }
             Err(e) => {
                 error!(error = %e, "failed to send notification");

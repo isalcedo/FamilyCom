@@ -163,7 +163,17 @@ async fn run_tui(mut client: IpcClient) -> Result<()> {
                                     handle_send_message(&mut app, &mut client).await;
                                 }
                                 other => {
+                                    // Track the selected peer before the action so we
+                                    // can detect peer switches (NextPeer, PrevPeer, etc.)
+                                    let prev_peer = app.selected_peer_id().cloned();
                                     app.handle_action(other);
+                                    let new_peer = app.selected_peer_id().cloned();
+
+                                    // If the user switched to a different peer, fetch
+                                    // that peer's message history from the daemon/DB.
+                                    if new_peer != prev_peer {
+                                        fetch_selected_peer_messages(&app, &mut client).await;
+                                    }
                                 }
                             }
                         }
