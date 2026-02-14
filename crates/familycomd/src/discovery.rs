@@ -150,13 +150,23 @@ impl DiscoveryService {
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|_| "familycom".to_string()));
 
+        // WORKAROUND: mdns-sd v0.12.0 has a case-sensitivity bug where
+        // `my_services` uses lowercased fullnames as keys, but the probe
+        // completion handler looks up services by the original-case name
+        // from `probe.waiting_services`. When the instance name has uppercase
+        // letters (e.g. "DadMachine"), the lookup fails and the service never
+        // transitions to Announced status — making it invisible to queries.
+        // Lowercasing the instance name here avoids the mismatch. The real
+        // display name is preserved in the TXT record "display_name" property.
+        let instance_name = display_name.to_lowercase();
+
         // If we have a specific IPv4 address, pass it to ServiceInfo so
         // the library only advertises that address. Otherwise, fall back
         // to addr_auto which picks up all addresses on active interfaces.
         let addr_str = ipv4_addr.map(|a| a.to_string()).unwrap_or_default();
         let service_info = ServiceInfo::new(
             SERVICE_TYPE,
-            display_name,   // Instance name (human-readable)
+            &instance_name, // Lowercase to work around mdns-sd probing bug
             &host,
             &addr_str,
             tcp_port,
