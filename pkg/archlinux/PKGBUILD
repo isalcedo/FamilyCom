@@ -17,7 +17,7 @@ makedepends=('cargo' 'pkg-config')
 install=familycom.install
 source=("$pkgname-$pkgver.tar.gz")
 # Checksums are updated automatically by build-package.sh
-sha256sums=('1d39a08b778ccf245fa95329671fd9a98ae65731c9f5d363279acf1541644bf5')
+sha256sums=('0ed9ce93c0ef7ba1c9ecdbc7889d97381a65a0fe72e2d858c76af93666ff456a')
 
 prepare() {
     cd "$srcdir/$pkgname-$pkgver"

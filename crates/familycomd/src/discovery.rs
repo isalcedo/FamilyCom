@@ -122,6 +122,12 @@ impl DiscoveryService {
             daemon
                 .enable_interface(IfKind::Name(iface_name))
                 .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
+            // Disable IPv6 multicast: our TCP server binds to 0.0.0.0 (IPv4 only),
+            // and dual-stack mDNS probing causes conflicts between A and AAAA records
+            // on the same interface, preventing successful service announcement.
+            daemon
+                .disable_interface(IfKind::IPv6)
+                .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
         }
 
         // Build our service info. The service name is a human-readable label
@@ -239,11 +245,15 @@ impl DiscoveryService {
                         .unwrap_or("Unknown")
                         .to_string();
 
-                    // Build the list of reachable addresses (IP:port)
+                    // Build the list of reachable addresses (IP:port).
+                    // Filter out IPv6 link-local addresses (fe80::/10) because
+                    // std::net doesn't support zone IDs (%iface) and our TCP
+                    // server only binds IPv4 anyway.
                     let port = info.get_port();
                     let addresses: Vec<String> = info
                         .get_addresses()
                         .iter()
+                        .filter(|addr| !is_ipv6_link_local(addr))
                         .map(|addr| format!("{addr}:{port}"))
                         .collect();
 
@@ -345,5 +355,46 @@ impl DiscoveryService {
     #[allow(dead_code)]
     pub fn peer_id(&self) -> &PeerId {
         &self.our_peer_id
+    }
+}
+
+/// Returns `true` if the address is an IPv6 link-local address (fe80::/10).
+///
+/// These addresses require a zone ID (`%iface`) that `std::net` doesn't support,
+/// so they always fail when used for TCP connections.
+fn is_ipv6_link_local(addr: &std::net::IpAddr) -> bool {
+    match addr {
+        std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+        std::net::IpAddr::V4(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    #[test]
+    fn test_is_ipv6_link_local() {
+        // IPv6 link-local addresses (fe80::/10) — should be filtered
+        let ll: IpAddr = "fe80::1".parse().unwrap();
+        assert!(is_ipv6_link_local(&ll));
+
+        let ll2: IpAddr = "fe80::abcd:ef01:2345:6789".parse().unwrap();
+        assert!(is_ipv6_link_local(&ll2));
+
+        // IPv6 non-link-local — should NOT be filtered
+        let global: IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(!is_ipv6_link_local(&global));
+
+        let loopback: IpAddr = "::1".parse().unwrap();
+        assert!(!is_ipv6_link_local(&loopback));
+
+        // IPv4 — should never be filtered
+        let v4: IpAddr = "192.168.1.1".parse().unwrap();
+        assert!(!is_ipv6_link_local(&v4));
+
+        let v4_ll: IpAddr = "169.254.1.1".parse().unwrap();
+        assert!(!is_ipv6_link_local(&v4_ll));
     }
 }
