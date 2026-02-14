@@ -24,6 +24,7 @@
 use familycom_core::types::{PeerId, PeerInfo, Timestamp};
 use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -98,39 +99,34 @@ impl DiscoveryService {
         // handles all multicast networking.
         let daemon = ServiceDaemon::new().map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
 
-        // Determine which network interface to use for mDNS.
-        // Without filtering, mDNS probes on ALL interfaces (including Docker
-        // bridges, VPNs, etc.) which causes conflicts and unreachable addresses.
-        let iface_name = match network_interface {
-            Some(name) => name.to_string(),
-            None => {
-                // Auto-detect: use the interface that holds the default route
-                netdev::get_default_interface()
-                    .map(|iface| iface.name)
-                    .unwrap_or_else(|e| {
-                        warn!(error = %e, "could not detect default network interface, using all");
-                        String::new()
-                    })
-            }
-        };
+        // Determine which network interface and IPv4 address to use for mDNS.
+        // We resolve to a specific IPv4 address rather than an interface name
+        // because IfKind::Name enables both IPv4 and IPv6 addresses, and
+        // disable_interface(IfKind::IPv6) is unreliable (the IPv6 addresses
+        // still appear in the daemon's socket list). Using IfKind::Addr with
+        // the exact IPv4 address is surgical and avoids IPv6 entirely.
+        // This matters because our TCP server binds to 0.0.0.0 (IPv4 only)
+        // and IPv6 link-local addresses lack zone IDs in std::net.
+        let (iface_name, ipv4_addr) = Self::detect_interface(network_interface);
 
-        if !iface_name.is_empty() {
-            info!(interface = %iface_name, "restricting mDNS to interface");
+        if let Some(addr) = ipv4_addr {
+            // Best case: pin mDNS to a single IPv4 address — no IPv6 at all
+            info!(interface = %iface_name, addr = %addr, "restricting mDNS to IPv4 address");
             daemon
                 .disable_interface(IfKind::All)
                 .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
             daemon
-                .enable_interface(IfKind::Name(iface_name))
+                .enable_interface(IfKind::Addr(IpAddr::V4(addr)))
                 .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
-            // Disable IPv6 AFTER enabling the named interface. The mdns-sd
-            // crate processes interface selections as an ordered list where
-            // the last matching rule wins. If we disable IPv6 before the
-            // named enable, the enable overrides it (Name matches both v4
-            // and v6 addresses). Placing the IPv6 disable last ensures it
-            // takes precedence for any IPv6 address on the interface.
-            // This is needed because our TCP server binds to 0.0.0.0 (IPv4
-            // only), and dual-stack mDNS causes resolution failures between
-            // peers (IPv6 link-local addresses lack zone IDs in std::net).
+        } else if !iface_name.is_empty() {
+            // Fallback: restrict by interface name if we couldn't resolve IPv4
+            warn!(interface = %iface_name, "could not find IPv4 address, falling back to interface name");
+            daemon
+                .disable_interface(IfKind::All)
+                .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
+            daemon
+                .enable_interface(IfKind::Name(iface_name.clone()))
+                .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
             daemon
                 .disable_interface(IfKind::IPv6)
                 .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
@@ -154,16 +150,24 @@ impl DiscoveryService {
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|_| "familycom".to_string()));
 
+        // If we have a specific IPv4 address, pass it to ServiceInfo so
+        // the library only advertises that address. Otherwise, fall back
+        // to addr_auto which picks up all addresses on active interfaces.
+        let addr_str = ipv4_addr.map(|a| a.to_string()).unwrap_or_default();
         let service_info = ServiceInfo::new(
             SERVICE_TYPE,
             display_name,   // Instance name (human-readable)
             &host,
-            "",             // No explicit addrs — addr_auto lets the lib find them
+            &addr_str,
             tcp_port,
             properties,
         )
-        .map_err(|e| DiscoveryError::Registration(e.to_string()))?
-        .enable_addr_auto();
+        .map_err(|e| DiscoveryError::Registration(e.to_string()))?;
+        let service_info = if ipv4_addr.is_some() {
+            service_info  // Address is explicit, don't let the lib add more
+        } else {
+            service_info.enable_addr_auto()
+        };
 
         // Save the full service name for later unregistration
         let fullname = service_info.get_fullname().to_string();
@@ -207,6 +211,37 @@ impl DiscoveryService {
         };
 
         Ok((service, event_rx))
+    }
+
+    /// Detects the network interface and its IPv4 address for mDNS.
+    ///
+    /// Returns `(interface_name, Option<Ipv4Addr>)`. If a specific interface
+    /// name is provided, looks it up by name. Otherwise, auto-detects the
+    /// default-route interface via `netdev`.
+    fn detect_interface(override_name: Option<&str>) -> (String, Option<Ipv4Addr>) {
+        match override_name {
+            Some(name) => {
+                // Manual override: look up the named interface's IPv4 address
+                let addr = netdev::get_interfaces()
+                    .into_iter()
+                    .find(|iface| iface.name == name)
+                    .and_then(|iface| iface.ipv4.first().map(|net| net.addr()));
+                (name.to_string(), addr)
+            }
+            None => {
+                // Auto-detect: use the interface that holds the default route
+                match netdev::get_default_interface() {
+                    Ok(iface) => {
+                        let addr = iface.ipv4.first().map(|net| net.addr());
+                        (iface.name, addr)
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "could not detect default network interface, using all");
+                        (String::new(), None)
+                    }
+                }
+            }
+        }
     }
 
     /// Background loop that receives mDNS browse events and forwards them
