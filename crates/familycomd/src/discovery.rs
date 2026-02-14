@@ -117,11 +117,12 @@ impl DiscoveryService {
             SERVICE_TYPE,
             display_name,   // Instance name (human-readable)
             &host,
-            "",             // Empty = use all available interfaces
+            "",             // No explicit addrs — addr_auto lets the lib find them
             tcp_port,
             properties,
         )
-        .map_err(|e| DiscoveryError::Registration(e.to_string()))?;
+        .map_err(|e| DiscoveryError::Registration(e.to_string()))?
+        .enable_addr_auto();
 
         // Save the full service name for later unregistration
         let fullname = service_info.get_fullname().to_string();
